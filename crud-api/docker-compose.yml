@@ -1,0 +1,56 @@
+services:
+  db:
+    image: mariadb:11.0
+    container_name: crud-mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME:-cruddb}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    ports:
+      - "3307:3306"
+    networks:
+      - crud-network
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "localhost", "-p${DB_PASSWORD}"]
+      timeout: 5s
+      retries: 5
+      interval: 10s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crud-app
+    environment:
+      SPRING_APPLICATION_NAME: crud-api
+      SPRING_DATASOURCE_URL: ${DB_URL}
+      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.mariadb.jdbc.Driver
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${JPA_DDL_AUTO:-create-drop}
+      SPRING_JPA_SHOW_SQL: ${SHOW_SQL:-false}
+      SPRING_FLYWAY_ENABLED: ${FLYWAY_ENABLED:-false}
+      SPRING_FLYWAY_LOCATIONS: classpath:db/migration
+      SPRING_FLYWAY_BASELINE_ON_MIGRATE: true
+      SERVER_PORT: ${SERVER_PORT:-8080}
+      LOGGING_LEVEL_COM_DEVOPS_CRUDAPI: ${LOG_LEVEL:-INFO}
+      LOGGING_FILE_NAME: ${LOG_FILE_PATH:-/var/logs/crud/app.log}
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+    volumes:
+      - ./logs:/var/logs/crud
+    ports:
+      - "${SERVER_PORT:-8080}:80"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - crud-network
+
+volumes:
+  mariadb_data:
+
+networks:
+  crud-network:
+    driver: bridge

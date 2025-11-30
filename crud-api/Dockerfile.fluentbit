@@ -1,0 +1,11 @@
+FROM fluent/fluent-bit:latest
+
+# Copier les fichiers de configuration
+COPY fluent-bit.conf /etc/fluent-bit.conf
+COPY parsers.conf /etc/parsers.conf
+
+# Exposer le port pour le monitoring
+EXPOSE 2020
+
+# Lancer Fluent Bit
+CMD ["/fluent-bit/bin/fluent-bit", "-c", "/etc/fluent-bit.conf"]

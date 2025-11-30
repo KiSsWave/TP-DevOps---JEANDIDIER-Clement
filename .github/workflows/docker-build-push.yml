@@ -1,12 +1,16 @@
-name: Build and Push Docker Image
+name: Build and Deploy to Cloud Run
 
 on:
   push:
     tags:
       - 'v*.*.*'  # Déclenche sur les tags de version (exemple: v1.0.0, v2.1.3)
 
+env:
+  GCP_REGION: europe-west1
+  SERVICE_NAME: crud-api
+
 jobs:
-  build-and-push:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -33,12 +37,12 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Configuration de Docker Buildx (pour build multi-plateforme si nécessaire)
+      # Configuration de Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Étape 4: Build et push de l'image Docker
-      - name: Build and push Docker image
+      # Étape 4: Build et push de l'image CRUD API
+      - name: Build and push CRUD API image
         uses: docker/build-push-action@v5
         with:
           context: ./crud-api
@@ -50,10 +54,109 @@ jobs:
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/crud-api:latest
           cache-to: type=inline
 
-      # Affichage du résumé
-      - name: Image pushed successfully
+      # Étape 5: Build et push de l'image Fluent Bit
+      - name: Build and push Fluent Bit image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./crud-api
+          file: ./crud-api/Dockerfile.fluentbit
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/crud-api-fluentbit:${{ steps.version.outputs.version }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/crud-api-fluentbit:latest
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/crud-api-fluentbit:latest
+          cache-to: type=inline
+
+      # Étape 6: Configuration du SDK Google Cloud
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # Étape 7: Build de l'image de migrations
+      - name: Build migrations image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./crud-api
+          file: ./crud-api/Dockerfile.migrations
+          push: false
+          load: true
+          tags: migrations:${{ steps.version.outputs.version }}
+
+      # Étape 8: Exécution des migrations de base de données
+      - name: Run database migrations
         run: |
-          echo "✅ Image Docker poussée avec succès!"
-          echo "Tags créés:"
+          echo "Exécution des migrations via Cloud SQL Proxy..."
+          docker run --rm \
+            -e INSTANCE_CONNECTION_NAME="${{ secrets.GCP_PROJECT_ID }}:${{ env.GCP_REGION }}:${{ secrets.CLOUDSQL_INSTANCE_NAME }}" \
+            -e DB_NAME="${{ secrets.DB_NAME }}" \
+            -e DB_USER="${{ secrets.DB_USER }}" \
+            -e DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \
+            migrations:${{ steps.version.outputs.version }}
+
+      # Étape 9: Mise à jour du fichier de configuration Cloud Run
+      - name: Update Cloud Run service configuration
+        run: |
+          echo "Remplacement des placeholders dans cloud-run-service.yaml..."
+          sed -i "s|__VERSION__|${{ steps.version.outputs.version }}|g" crud-api/cloud-run-service.yaml
+          sed -i "s|__DOCKERHUB_USERNAME__|${{ secrets.DOCKERHUB_USERNAME }}|g" crud-api/cloud-run-service.yaml
+          sed -i "s|__GCP_PROJECT_ID__|${{ secrets.GCP_PROJECT_ID }}|g" crud-api/cloud-run-service.yaml
+          sed -i "s|__GCP_REGION__|${{ env.GCP_REGION }}|g" crud-api/cloud-run-service.yaml
+          sed -i "s|__INSTANCE_CONNECTION_NAME__|${{ secrets.GCP_PROJECT_ID }}:${{ env.GCP_REGION }}:${{ secrets.CLOUDSQL_INSTANCE_NAME }}|g" crud-api/cloud-run-service.yaml
+          sed -i "s|__DB_NAME__|${{ secrets.DB_NAME }}|g" crud-api/cloud-run-service.yaml
+          sed -i "s|__DB_USER__|${{ secrets.DB_USER }}|g" crud-api/cloud-run-service.yaml
+          sed -i "s|__DB_PASSWORD__|${{ secrets.DB_PASSWORD }}|g" crud-api/cloud-run-service.yaml
+          sed -i "s|__LOKI_URL__|${{ secrets.LOKI_URL }}|g" crud-api/cloud-run-service.yaml
+
+          echo "Configuration mise à jour:"
+          cat crud-api/cloud-run-service.yaml
+
+      # Étape 10: Déploiement sur Cloud Run
+      - name: Deploy to Cloud Run
+        run: |
+          echo "Déploiement du service sur Cloud Run..."
+          gcloud run services replace crud-api/cloud-run-service.yaml \
+            --platform managed \
+            --region ${{ env.GCP_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }}
+
+          echo "Configuration des permissions pour les invocations publiques..."
+          gcloud run services add-iam-policy-binding ${{ env.SERVICE_NAME }} \
+            --platform managed \
+            --region ${{ env.GCP_REGION }} \
+            --member="allUsers" \
+            --role="roles/run.invoker" \
+            --project ${{ secrets.GCP_PROJECT_ID }}
+
+      # Étape 11: Récupération de l'URL du service
+      - name: Get service URL
+        id: service_url
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --platform managed \
+            --region ${{ env.GCP_REGION }} \
+            --format 'value(status.url)' \
+            --project ${{ secrets.GCP_PROJECT_ID }})
+          echo "url=$SERVICE_URL" >> $GITHUB_OUTPUT
+          echo "Service URL: $SERVICE_URL"
+
+      # Affichage du résumé
+      - name: Deployment summary
+        run: |
+          echo "Déploiement réussi!"
+          echo ""
+          echo "Images Docker publiées:"
           echo "  - ${{ secrets.DOCKERHUB_USERNAME }}/crud-api:${{ steps.version.outputs.version }}"
           echo "  - ${{ secrets.DOCKERHUB_USERNAME }}/crud-api:latest"
+          echo "  - ${{ secrets.DOCKERHUB_USERNAME }}/crud-api-fluentbit:${{ steps.version.outputs.version }}"
+          echo "  - ${{ secrets.DOCKERHUB_USERNAME }}/crud-api-fluentbit:latest"
+          echo ""
+          echo "Migrations de base de données: Exécutées"
+          echo ""
+          echo "Service déployé sur Cloud Run:"
+          echo "  URL: ${{ steps.service_url.outputs.url }}"
+          echo "  Région: ${{ env.GCP_REGION }}"
+          echo "  Version: ${{ steps.version.outputs.version }}"

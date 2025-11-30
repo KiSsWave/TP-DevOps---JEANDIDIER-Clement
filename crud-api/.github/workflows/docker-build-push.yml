@@ -1,0 +1,59 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Déclenche sur les tags de version (exemple: v1.0.0, v2.1.3)
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Étape 1: Récupération du code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Étape 2: Extraction de la version depuis le tag Git
+      - name: Extract version from tag
+        id: version
+        run: |
+          # Récupère le tag (exemple: refs/tags/v1.0.0)
+          TAG=${GITHUB_REF#refs/tags/}
+          # Enlève le 'v' du début (v1.0.0 -> 1.0.0)
+          VERSION=${TAG#v}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version extraite: $VERSION"
+
+      # Étape 3: Connexion à Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Configuration de Docker Buildx (pour build multi-plateforme si nécessaire)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Étape 4: Build et push de l'image Docker
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/crud-api:${{ steps.version.outputs.version }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/crud-api:latest
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/crud-api:latest
+          cache-to: type=inline
+
+      # Affichage du résumé
+      - name: Image pushed successfully
+        run: |
+          echo "✅ Image Docker poussée avec succès!"
+          echo "Tags créés:"
+          echo "  - ${{ secrets.DOCKERHUB_USERNAME }}/crud-api:${{ steps.version.outputs.version }}"
+          echo "  - ${{ secrets.DOCKERHUB_USERNAME }}/crud-api:latest"

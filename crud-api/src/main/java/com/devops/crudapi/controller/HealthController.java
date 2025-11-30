@@ -49,4 +49,17 @@ public class HealthController {
         logger.info("Health check terminé - Status: {}", health.get("status"));
         return ResponseEntity.ok(health);
     }
+
+    @GetMapping("/test-error-log")
+    public ResponseEntity<Map<String, String>> testErrorLog() {
+        logger.error("TEST: Ceci est un message d'erreur de test pour vérifier error.log");
+        logger.warn("TEST: Ceci est un avertissement (ne devrait pas être dans error.log)");
+        logger.info("TEST: Ceci est une info (ne devrait pas être dans error.log)");
+
+        Map<String, String> response = new HashMap<>();
+        response.put("message", "Logs de test générés - vérifiez logs/error.log");
+        response.put("error_logged", "true");
+
+        return ResponseEntity.ok(response);
+    }
 }
